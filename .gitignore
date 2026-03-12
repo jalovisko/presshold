@@ -1,2 +1,10 @@
+# Build artifacts
 /target/
-Cargo.lock
+
+# Package build files
+PKGBUILD
+.SRCINFO
+presshold-*.tar.gz
+
+# Editor swap files
+.Cargo.lock.kate-swp
