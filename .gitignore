@@ -8,3 +8,7 @@ presshold-*.tar.gz
 
 # Editor swap files
 .Cargo.lock.kate-swp
+
+# AUR package build files
+aur-presshold/
+aur-presshold
