@@ -13,7 +13,11 @@ pub fn inject(ch: char, session: &Session) -> bool {
         if try_wtype(&s) {
             return true;
         }
-        debug!("wtype failed, falling back to xdotool");
+        debug!("wtype failed, trying ydotool");
+        if try_ydotool(&s) {
+            return true;
+        }
+        debug!("ydotool failed, falling back to xdotool");
     }
 
     // X11 or XWayland fallback
@@ -34,6 +38,23 @@ fn try_wtype(s: &str) -> bool {
         }
         Err(e) => {
             debug!("wtype not available: {e}");
+            false
+        }
+    }
+}
+
+fn try_ydotool(s: &str) -> bool {
+    // ydotool uses uinput, works on GNOME Wayland and other compositors that
+    // don't support zwp_virtual_keyboard_v1 (required by wtype).
+    // Requires the ydotoold daemon to be running.
+    match Command::new("ydotool").args(["type", "--", s]).status() {
+        Ok(st) if st.success() => true,
+        Ok(st) => {
+            debug!("ydotool exited with {st}");
+            false
+        }
+        Err(e) => {
+            debug!("ydotool not available: {e}");
             false
         }
     }
