@@ -7,7 +7,7 @@ use std::thread;
 
 // ── Discovery ────────────────────────────────────────────────────────────────
 
-/// Return all physical keyboard devices (devices that have A–Z keys).
+/// Return all physical keyboard devices (devices that have A-Z keys).
 pub fn find_keyboards() -> Vec<Device> {
     evdev::enumerate()
         .filter_map(|(path, dev)| {
@@ -61,7 +61,7 @@ pub fn spawn_readers(mut devices: Vec<Device>, tx: SyncSender<InputEvent>) {
     for mut dev in devices.drain(..) {
         let name = dev.name().unwrap_or("?").to_string();
         if let Err(e) = dev.grab() {
-            warn!("Could not grab {name}: {e} — skipping");
+            warn!("Could not grab {name}: {e}. Skipping");
             continue;
         }
         info!("Grabbed {name}");

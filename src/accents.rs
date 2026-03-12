@@ -34,7 +34,7 @@ pub fn variants(ch: char) -> Option<&'static [char]> {
         'U' => Some(&['Ú', 'Ù', 'Ū', 'Ŭ', 'Û', 'Ü', 'Ů']),
         'Y' => Some(&['Ý', 'Ÿ']),
         'Z' => Some(&['Ž', 'Ź', 'Ż']),
-        // — punctuation —
+        // - punctuation -
         '-' => Some(&['\u{2013}', '\u{2014}', '\u{2212}']), // – — −
         _ => None,
     }

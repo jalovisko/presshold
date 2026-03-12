@@ -1,5 +1,5 @@
 [Unit]
-Description=presshold – macOS-style accent character selector
+Description=presshold is a macOS-style accent character selector
 Documentation=https://github.com/jalovisko/presshold
 After=graphical-session.target
 PartOf=graphical-session.target

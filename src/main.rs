@@ -156,7 +156,7 @@ impl Daemon {
                     };
                 }
                 _ => {
-                    // Another event for the same key — keep pending
+                    // Another event for the same key. Keep pending.
                     self.state = State::Pending { key: pending_key, base_char };
                 }
             }
@@ -164,7 +164,7 @@ impl Daemon {
         }
 
         // Non-KEY events (EV_SYN, EV_MSC, EV_LED, …) arrive between every key
-        // event.  They must not break hold detection — pass them through and
+        // event.  They must not break hold detection. Pass them through and
         // stay in Pending.
         if event.event_type() != EventType::KEY {
             self.state = State::Pending { key: pending_key, base_char };
@@ -225,7 +225,7 @@ impl Daemon {
             return None;
         }
 
-        // Number keys 1–9
+        // Number keys 1-9
         let maybe_idx = match key {
             Key::KEY_1 => Some(0), Key::KEY_2 => Some(1), Key::KEY_3 => Some(2),
             Key::KEY_4 => Some(3), Key::KEY_5 => Some(4), Key::KEY_6 => Some(5),
@@ -430,7 +430,7 @@ fn main() -> Result<()> {
         });
 
         // Prevent the application from quitting when there are no open windows.
-        // We intentionally leak the guard — the process lifetime IS the hold.
+        // We intentionally leak the guard. The process lifetime IS the hold.
         std::mem::forget(app.hold());
 
         info!("presshold is running. Hold a letter key to see accent options.");

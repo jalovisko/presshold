@@ -268,7 +268,7 @@ fn layer_shell_position(
 
     window.init_layer_shell();
     window.set_layer(Layer::Overlay);
-    // Do NOT grab keyboard — the physical keyboard is already grabbed via evdev.
+    // Do NOT grab keyboard. The physical keyboard is already grabbed via evdev.
     window.set_keyboard_mode(gtk4_layer_shell::KeyboardMode::None);
 
     // Anchor the top-left corner to position (x, y) from the screen origin.
