@@ -5,7 +5,8 @@
 #
 # Prerequisites:
 #   - Version already bumped in Cargo.toml and PKGBUILD
-#   - All changes committed and pushed to GitHub
+#   - All changes committed and pushed to GitHub,
+#     e.g. git tag v0.2.2 && git push origin main && git push origin v0.2.2
 #   - aur-presshold/ is a clone of the AUR repo (in the same directory as this script)
 #     (if missing, run: git clone ssh://aur@aur.archlinux.org/presshold.git aur-presshold)
 
@@ -35,7 +36,7 @@ fi
 cp "$SCRIPT_DIR/PKGBUILD" "$AUR_DIR/PKGBUILD"
 
 echo "==> Fetching source tarball and computing sha256sums..."
-NEW_SHA=$(cd "$AUR_DIR" && makepkg -g 2>/dev/null | grep -oP "(?<=sha256sums=\(')[a-f0-9]+")
+NEW_SHA=$(cd "$AUR_DIR" && makepkg -g 2>/dev/null | grep -oP "(?<=sha256sums=\(')[a-f0-9]+" || true)
 if [[ -z "$NEW_SHA" ]]; then
     echo "ERROR: makepkg -g failed to produce a checksum."
     exit 1

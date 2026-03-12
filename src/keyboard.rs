@@ -8,18 +8,24 @@ use std::thread;
 // ── Discovery ────────────────────────────────────────────────────────────────
 
 /// Return all physical keyboard devices (devices that have A-Z keys).
+/// Virtual/uinput devices are excluded — they have no physical path.
 pub fn find_keyboards() -> Vec<Device> {
     evdev::enumerate()
         .filter_map(|(path, dev)| {
             let has_letters = dev
                 .supported_keys()
                 .map_or(false, |k| k.contains(Key::KEY_A) && k.contains(Key::KEY_Z));
-            if has_letters {
-                info!("Found keyboard: {} ({})", dev.name().unwrap_or("?"), path.display());
-                Some(dev)
-            } else {
-                None
+            if !has_letters {
+                return None;
             }
+            // Skip uinput virtual devices — they have an empty physical path.
+            let phys = dev.physical_path().unwrap_or_default();
+            if phys.is_empty() {
+                debug!("Skipping virtual device: {} ({})", dev.name().unwrap_or("?"), path.display());
+                return None;
+            }
+            info!("Found keyboard: {} ({})", dev.name().unwrap_or("?"), path.display());
+            Some(dev)
         })
         .collect()
 }
