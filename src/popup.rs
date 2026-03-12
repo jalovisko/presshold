@@ -49,7 +49,8 @@ impl Popup {
     ///
     /// The popup does **not** steal keyboard focus so that xdotool / wtype
     /// still delivers characters to the previously focused window.
-    pub fn new(accents: &[char], cursor_x: i32, cursor_y: i32) -> Self {
+    /// `base_char` is shown as item #1 (index 0); `accents` follow as #2, #3 …
+    pub fn new(base_char: char, accents: &[char], cursor_x: i32, cursor_y: i32) -> Self {
         // ── CSS ──────────────────────────────────────────────────────────────
         let provider = CssProvider::new();
         provider.load_from_data(CSS);
@@ -80,9 +81,13 @@ impl Popup {
             .margin_end(8)
             .build();
 
-        let mut items: Vec<GBox> = Vec::with_capacity(accents.len());
+        // base_char is item #1; accent variants follow as #2, #3, …
+        let all_chars: Vec<char> = std::iter::once(base_char)
+            .chain(accents.iter().copied())
+            .collect();
+        let mut items: Vec<GBox> = Vec::with_capacity(all_chars.len());
 
-        for (i, &ch) in accents.iter().enumerate() {
+        for (i, ch) in all_chars.iter().enumerate() {
             let item = GBox::builder()
                 .orientation(Orientation::Vertical)
                 .spacing(1)
@@ -115,7 +120,7 @@ impl Popup {
 
         // ── Position ──────────────────────────────────────────────────────────
         #[cfg(feature = "layer-shell")]
-        let used_layer_shell = layer_shell_position(&window, accents.len(), cursor_x, cursor_y);
+        let used_layer_shell = layer_shell_position(&window, 1 + accents.len(), cursor_x, cursor_y);
         #[cfg(not(feature = "layer-shell"))]
         let used_layer_shell = false;
 

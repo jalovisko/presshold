@@ -116,10 +116,10 @@ journalctl --user -u presshold.service -f
 
 ## 6. How it works
 
-1. presshold **exclusively grabs** every physical keyboard via the Linux `evdev` API.
-2. A **uinput virtual keyboard** re-emits all events that should pass through to applications.
+1. presshold exclusively grabs every physical keyboard via the Linux `evdev` API.
+2. A uinput virtual keyboard re-emits all events that should pass through to applications.
 3. When a letter key is held long enough to trigger the kernel's autorepeat, presshold
-   intercepts that event and shows a **GTK4 popup**.
+   intercepts that event and shows a GTK4 popup.
 4. Navigation keys are handled internally; the selected accent is injected via
    **`wtype`** (Wayland) or **`xdotool type`** (X11).
    Synthetic injection events bypass our evdev grab and reach the focused application directly.

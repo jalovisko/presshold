@@ -12,6 +12,7 @@ use glib::ControlFlow;
 use gtk4::prelude::*;
 use gtk4::Application;
 use log::{debug, info, warn};
+use std::time::Instant;
 use popup::Popup;
 use std::cell::RefCell;
 use std::process;
@@ -65,8 +66,10 @@ impl Daemon {
     // ── Top-level event dispatcher ───────────────────────────────────────────
 
     fn handle_event(&mut self, event: InputEvent) {
+        let is_key = event.event_type() == EventType::KEY;
+        let t0 = is_key.then(Instant::now);
         // Track modifier state so we know the effective character of a keypress.
-        if event.event_type() == EventType::KEY {
+        if is_key {
             match Key::new(event.code()) {
                 Key::KEY_LEFTSHIFT | Key::KEY_RIGHTSHIFT => {
                     self.shift = event.value() != 0;
@@ -99,6 +102,9 @@ impl Daemon {
         // (e.g. when another key is pressed while the popup is open).
         if let Some(ev) = reprocess {
             self.handle_idle(ev);
+        }
+        if let Some(t) = t0 {
+            debug!("key event processed in {:?}", t.elapsed());
         }
     }
 
@@ -141,7 +147,7 @@ impl Daemon {
                     let variants = accents::variants(base_char).unwrap();
                     let (cx, cy) = cursor_pos();
                     info!("Showing popup for {base_char:?} at ({cx},{cy})");
-                    self.popup = Some(Popup::new(variants, cx, cy));
+                    self.popup = Some(Popup::new(base_char, variants, cx, cy));
                     self.state = State::PopupActive {
                         trigger_key: pending_key,
                         base_char,
@@ -193,9 +199,9 @@ impl Daemon {
         let key   = Key::new(event.code());
         let value = event.value();
 
-        // Release of the trigger key → confirm the currently highlighted accent.
+        // Release of the trigger key → keep popup open (macOS-style: release doesn't confirm).
         if key == trigger_key && value == 0 {
-            self.confirm(accents[selected]);
+            self.state = State::PopupActive { trigger_key, base_char, accents, selected };
             return None;
         }
 
@@ -213,7 +219,7 @@ impl Daemon {
             return None;
         }
         if key == Key::KEY_RIGHT {
-            selected = (selected + 1).min(accents.len().saturating_sub(1));
+            selected = (selected + 1).min(accents.len()); // total items = 1 + accents.len()
             self.update_selection(selected);
             self.state = State::PopupActive { trigger_key, base_char, accents, selected };
             return None;
@@ -227,15 +233,18 @@ impl Daemon {
             _ => None,
         };
         if let Some(idx) = maybe_idx {
-            if idx < accents.len() {
-                self.confirm(accents[idx]);
+            let total = 1 + accents.len();
+            if idx < total {
+                let ch = if idx == 0 { base_char } else { accents[idx - 1] };
+                self.confirm(ch);
             }
             return None;
         }
 
         // Enter / Space / KP-Enter → confirm current
         if matches!(key, Key::KEY_ENTER | Key::KEY_SPACE | Key::KEY_KPENTER) {
-            self.confirm(accents[selected]);
+            let ch = if selected == 0 { base_char } else { accents[selected - 1] };
+            self.confirm(ch);
             return None;
         }
 
@@ -250,14 +259,15 @@ impl Daemon {
             .map(|c| c.to_ascii_lowercase() == base_char.to_ascii_lowercase())
             .unwrap_or(false);
         if same_letter {
-            selected = (selected + 1) % accents.len();
+            selected = (selected + 1) % (1 + accents.len());
             self.update_selection(selected);
             self.state = State::PopupActive { trigger_key, base_char, accents, selected };
             return None;
         }
 
         // Any other key → confirm current selection, re-process this key in Idle
-        self.confirm(accents[selected]);
+        let ch = if selected == 0 { base_char } else { accents[selected - 1] };
+        self.confirm(ch);
         Some(event)
     }
 
@@ -306,12 +316,24 @@ impl Daemon {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Query the current mouse cursor position in root (screen) coordinates.
-/// Falls back to (960, 540) when xdotool is unavailable (Wayland, etc.).
 fn cursor_pos() -> (i32, i32) {
-    if let Ok(out) = process::Command::new("xdotool")
-        .arg("getmouselocation")
-        .output()
-    {
+    // Hyprland: use hyprctl cursorpos (most accurate on Wayland)
+    if std::env::var("HYPRLAND_INSTANCE_SIGNATURE").is_ok() {
+        if let Ok(out) = process::Command::new("hyprctl").arg("cursorpos").output() {
+            if let Ok(s) = std::str::from_utf8(&out.stdout) {
+                // Output: "X, Y"
+                let mut parts = s.trim().splitn(2, ", ");
+                if let (Some(xs), Some(ys)) = (parts.next(), parts.next()) {
+                    if let (Ok(x), Ok(y)) = (xs.parse::<i32>(), ys.parse::<i32>()) {
+                        return (x, y);
+                    }
+                }
+            }
+        }
+    }
+
+    // X11 / XWayland fallback
+    if let Ok(out) = process::Command::new("xdotool").arg("getmouselocation").output() {
         if let Ok(s) = std::str::from_utf8(&out.stdout) {
             let parse = |prefix: &str| -> Option<i32> {
                 s.split_whitespace()
@@ -323,7 +345,8 @@ fn cursor_pos() -> (i32, i32) {
             }
         }
     }
-    (960, 540) // sensible default for a 1080p screen
+
+    (960, 540)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
