@@ -64,7 +64,21 @@ sudo usermod -aG input $USER
 # Log out and back in (or run: newgrp input) for the change to take effect.
 ```
 
-## 3. Building
+## 3. Installation
+
+### 3.1. Arch Linux (AUR)
+
+```bash
+yay -S presshold
+```
+
+Then enable the service:
+
+```bash
+systemctl --user enable --now presshold.service
+```
+
+### 3.2. Build from source
 
 ```bash
 git clone https://github.com/jalovisko/presshold.git
