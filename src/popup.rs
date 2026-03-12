@@ -194,7 +194,13 @@ fn position_window(window: &Window, cursor_x: i32, cursor_y: i32) {
         .unwrap_or((0, 0, 1920, 1080));
 
     let x = (cursor_x - w / 2).clamp(mx, mx + mw - w);
-    let y = (cursor_y + 20).clamp(my, my + mh - h);
+    // Show below cursor; flip above if it would go off-screen.
+    let y = if cursor_y + 20 + h <= my + mh {
+        cursor_y + 20
+    } else {
+        cursor_y - h - 10
+    }
+    .clamp(my, my + mh - h);
 
     try_move_x11(window, x, y);
     debug!("Popup placed at ({x},{y})");
@@ -271,11 +277,30 @@ fn layer_shell_position(
     window.set_anchor(Edge::Right,  false);
     window.set_anchor(Edge::Bottom, false);
 
-    // Estimate popup width to horizontally centre over cursor.
-    // Each character box ≈ 62 px wide plus 16 px total padding.
+    // Estimate popup size to position it.
+    // Each character box ≈ 62 px wide plus 16 px total padding; height ≈ 80 px.
     let est_w = n_accents as i32 * 62 + 16;
+    let est_h = 80;
     let x = (cursor_x - est_w / 2).max(0);
-    let y = cursor_y + 20; // appear just below the text cursor
+    // Show below cursor; flip above if it would go off the bottom of the monitor.
+    let monitor_bottom = gtk4::gdk::Display::default()
+        .and_then(|d| {
+            d.monitors()
+                .into_iter()
+                .filter_map(|o| o.ok().and_then(|o| o.downcast::<gtk4::gdk::Monitor>().ok()))
+                .find(|m| {
+                    let g = m.geometry();
+                    cursor_x >= g.x() && cursor_x < g.x() + g.width()
+                        && cursor_y >= g.y() && cursor_y < g.y() + g.height()
+                })
+                .map(|m| { let g = m.geometry(); g.y() + g.height() })
+        })
+        .unwrap_or(1080);
+    let y = if cursor_y + 20 + est_h <= monitor_bottom {
+        cursor_y + 20
+    } else {
+        cursor_y - est_h - 10
+    };
 
     window.set_margin(Edge::Left, x);
     window.set_margin(Edge::Top,  y);
