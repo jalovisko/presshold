@@ -1,0 +1,28 @@
+[package]
+name = "presshold"
+version = "0.1.0"
+edition = "2021"
+description = "macOS-style accent character selector for Linux"
+license = "MIT"
+
+[[bin]]
+name = "presshold"
+path = "src/main.rs"
+
+[dependencies]
+evdev    = "0.12"
+gtk4     = "0.10"
+glib     = "0.21"
+log      = "0.4"
+env_logger = "0.11"
+anyhow   = "1"
+
+# Proper Wayland layer-shell popup positioning (requires libgtk4-layer-shell).
+# Disable with: cargo build --no-default-features
+[dependencies.gtk4-layer-shell]
+version  = "0.6"
+optional = true
+
+[features]
+default     = ["layer-shell"]
+layer-shell = ["dep:gtk4-layer-shell"]

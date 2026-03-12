@@ -1,0 +1,22 @@
+[Unit]
+Description=presshold – macOS-style accent character selector
+Documentation=https://github.com/jalovisko/presshold
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/presshold
+Restart=on-failure
+RestartSec=3
+
+# Forward DISPLAY / WAYLAND_DISPLAY from the user session.
+# systemd's user instance does not inherit these automatically on all setups;
+# the install script writes them into the environment file below.
+EnvironmentFile=-%h/.config/presshold/env
+
+# Give uinput a moment to register before other apps enumerate input devices.
+TimeoutStartSec=5
+
+[Install]
+WantedBy=graphical-session.target
