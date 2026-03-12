@@ -67,7 +67,7 @@ sudo usermod -aG input $USER
 ## 3. Building
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/jalovisko/presshold.git
 cd presshold
 
 # With Wayland layer-shell positioning (default, recommended):
