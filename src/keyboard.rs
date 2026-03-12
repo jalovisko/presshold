@@ -110,6 +110,8 @@ pub fn key_to_char(key: Key, shift: bool, caps: bool) -> Option<char> {
         Key::KEY_S => 's', Key::KEY_T => 't', Key::KEY_U => 'u',
         Key::KEY_V => 'v', Key::KEY_W => 'w', Key::KEY_X => 'x',
         Key::KEY_Y => 'y', Key::KEY_Z => 'z',
+        // Punctuation keys that have accent-like variants (shift state ignored).
+        Key::KEY_MINUS => return Some('-'),
         _ => return None,
     };
     Some(if upper {
