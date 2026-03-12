@@ -236,7 +236,8 @@ impl Daemon {
             let total = 1 + accents.len();
             if idx < total {
                 let ch = if idx == 0 { base_char } else { accents[idx - 1] };
-                self.confirm(ch);
+                self.update_selection(idx);
+                self.confirm_flash(ch);
             }
             return None;
         }
@@ -244,7 +245,7 @@ impl Daemon {
         // Enter / Space / KP-Enter → confirm current
         if matches!(key, Key::KEY_ENTER | Key::KEY_SPACE | Key::KEY_KPENTER) {
             let ch = if selected == 0 { base_char } else { accents[selected - 1] };
-            self.confirm(ch);
+            self.confirm_flash(ch);
             return None;
         }
 
@@ -294,20 +295,39 @@ impl Daemon {
         }
     }
 
-    /// Inject the chosen character and tear down the popup.
+    /// Inject the chosen character and tear down the popup immediately.
     fn confirm(&mut self, ch: char) {
         if let Some(p) = self.popup.take() {
             p.close();
         }
         self.state = State::Idle;
-
-        // Delay injection so the compositor can return keyboard focus to the
-        // previously focused window before wtype runs.
         let session = self.session.clone();
         glib::timeout_add_local(Duration::from_millis(80), move || {
             injector::inject(ch, &session);
             ControlFlow::Break
         });
+    }
+
+    /// Like `confirm`, but keeps the popup visible for 100 ms so the user can
+    /// see the selection move before it disappears.
+    fn confirm_flash(&mut self, ch: char) {
+        self.state = State::Idle;
+        if let Some(popup) = self.popup.take() {
+            let session = self.session.clone();
+            let mut popup_slot = Some(popup);
+            glib::timeout_add_local(Duration::from_millis(100), move || {
+                if let Some(p) = popup_slot.take() {
+                    p.close();
+                }
+                // Give the compositor ~80 ms to return focus before injecting.
+                let session = session.clone();
+                glib::timeout_add_local(Duration::from_millis(80), move || {
+                    injector::inject(ch, &session);
+                    ControlFlow::Break
+                });
+                ControlFlow::Break
+            });
+        }
     }
 }
 
