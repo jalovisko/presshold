@@ -44,7 +44,7 @@ enum State {
 
 struct Daemon {
     state:   State,
-    vdev:    VirtualDevice,
+    vdev:    Rc<RefCell<VirtualDevice>>,
     popup:   Option<Popup>,
     session: Session,
     shift:   bool,
@@ -55,7 +55,7 @@ impl Daemon {
     fn new(vdev: VirtualDevice, session: Session) -> Self {
         Self {
             state: State::Idle,
-            vdev,
+            vdev: Rc::new(RefCell::new(vdev)),
             popup: None,
             session,
             shift: false,
@@ -276,14 +276,14 @@ impl Daemon {
 
     /// Pass an event through to the virtual keyboard as-is.
     fn passthrough(&mut self, event: InputEvent) {
-        if let Err(e) = self.vdev.emit(&[event]) {
+        if let Err(e) = self.vdev.borrow_mut().emit(&[event]) {
             warn!("Passthrough error: {e}");
         }
     }
 
     /// Synthesise a key press or release and emit it (followed by SYN).
     fn emit_key(&mut self, key: Key, value: i32) {
-        let _ = self.vdev.emit(&[
+        let _ = self.vdev.borrow_mut().emit(&[
             InputEvent::new_now(EventType::KEY, key.code(), value),
             InputEvent::new_now(EventType::SYNCHRONIZATION, 0, 0),
         ]);
@@ -295,6 +295,14 @@ impl Daemon {
         }
     }
 
+    fn is_gnome_wayland(&self) -> bool {
+        matches!(self.session, Session::Wayland)
+            && std::env::var("XDG_CURRENT_DESKTOP")
+                .unwrap_or_default()
+                .to_lowercase()
+                .contains("gnome")
+    }
+
     /// Inject the chosen character and tear down the popup immediately.
     fn confirm(&mut self, ch: char) {
         if let Some(p) = self.popup.take() {
@@ -302,10 +310,18 @@ impl Daemon {
         }
         self.state = State::Idle;
         let session = self.session.clone();
-        glib::timeout_add_local(Duration::from_millis(80), move || {
-            injector::inject(ch, &session);
-            ControlFlow::Break
-        });
+        if self.is_gnome_wayland() {
+            let vdev = Rc::clone(&self.vdev);
+            glib::timeout_add_local(Duration::from_millis(80), move || {
+                inject_via_unicode_input(ch, &vdev);
+                ControlFlow::Break
+            });
+        } else {
+            glib::timeout_add_local(Duration::from_millis(80), move || {
+                injector::inject(ch, &session);
+                ControlFlow::Break
+            });
+        }
     }
 
     /// Like `confirm`, but keeps the popup visible for 100 ms so the user can
@@ -314,20 +330,80 @@ impl Daemon {
         self.state = State::Idle;
         if let Some(popup) = self.popup.take() {
             let session = self.session.clone();
+            let gnome_wayland = self.is_gnome_wayland();
+            let vdev = Rc::clone(&self.vdev);
             let mut popup_slot = Some(popup);
             glib::timeout_add_local(Duration::from_millis(100), move || {
                 if let Some(p) = popup_slot.take() {
                     p.close();
                 }
-                // Give the compositor ~80 ms to return focus before injecting.
                 let session = session.clone();
+                let vdev = Rc::clone(&vdev);
                 glib::timeout_add_local(Duration::from_millis(80), move || {
-                    injector::inject(ch, &session);
+                    if gnome_wayland {
+                        inject_via_unicode_input(ch, &vdev);
+                    } else {
+                        injector::inject(ch, &session);
+                    }
                     ControlFlow::Break
                 });
                 ControlFlow::Break
             });
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GNOME Wayland clipboard injection
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Inject a character on GNOME Wayland using the GTK Unicode input method:
+/// Ctrl+Shift+U, hex codepoint digits, Enter.
+///
+/// This works universally in GTK apps, GNOME Terminal, Firefox, Chrome,
+/// LibreOffice, and any app that supports the GTK Unicode input method.
+/// Our vdev is trusted by GNOME because it replaced the grabbed physical keyboard.
+fn inject_via_unicode_input(ch: char, vdev: &Rc<RefCell<VirtualDevice>>) {
+    let codepoint = format!("{:x}", ch as u32);
+
+    let hex_key = |c: char| -> Key {
+        match c {
+            '0' => Key::KEY_0, '1' => Key::KEY_1, '2' => Key::KEY_2,
+            '3' => Key::KEY_3, '4' => Key::KEY_4, '5' => Key::KEY_5,
+            '6' => Key::KEY_6, '7' => Key::KEY_7, '8' => Key::KEY_8,
+            '9' => Key::KEY_9, 'a' => Key::KEY_A, 'b' => Key::KEY_B,
+            'c' => Key::KEY_C, 'd' => Key::KEY_D, 'e' => Key::KEY_E,
+            _   => Key::KEY_F,
+        }
+    };
+
+    let syn = || InputEvent::new_now(EventType::SYNCHRONIZATION, 0, 0);
+    let dn  = |k: Key| InputEvent::new_now(EventType::KEY, k.code(), 1);
+    let up  = |k: Key| InputEvent::new_now(EventType::KEY, k.code(), 0);
+
+    let mut events: Vec<InputEvent> = vec![
+        // Ctrl+Shift+U — enter Unicode input mode
+        dn(Key::KEY_LEFTCTRL),  syn(),
+        dn(Key::KEY_LEFTSHIFT), syn(),
+        dn(Key::KEY_U),         syn(),
+        up(Key::KEY_U),         syn(),
+        up(Key::KEY_LEFTSHIFT), syn(),
+        up(Key::KEY_LEFTCTRL),  syn(),
+    ];
+
+    // Hex digits
+    for c in codepoint.chars() {
+        let k = hex_key(c);
+        events.push(dn(k)); events.push(syn());
+        events.push(up(k)); events.push(syn());
+    }
+
+    // Enter to confirm
+    events.push(dn(Key::KEY_ENTER)); events.push(syn());
+    events.push(up(Key::KEY_ENTER)); events.push(syn());
+
+    if let Err(e) = vdev.borrow_mut().emit(&events) {
+        warn!("Unicode input emit failed: {e}");
     }
 }
 

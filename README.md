@@ -53,24 +53,13 @@ Or via your package manager:
 > Which injection tool do you need?
 > - X11 (any desktop): `xdotool`
 > - Wayland on Sway / Hyprland / wlroots compositors: `wtype`
-> - Wayland on GNOME: `ydotool` (also requires the `ydotoold` daemon, see below)
 >
 > presshold tries wtype, ydotool, and xdotool, in that order, and uses the first one that succeeds.
 > `gtk4-layer-shell` is optional but strongly recommended on wlroots Wayland compositors.
 > GNOME Wayland does not support the layer-shell protocol, so the popup will appear in the
 > centre of the screen rather than near the cursor. This is a known GNOME limitation.
 
-#### ydotoold daemon (GNOME Wayland)
 
-`ydotool` requires its daemon to be running:
-
-```bash
-# Start once
-ydotoold &
-
-# Or enable as a systemd user service
-systemctl --user enable --now ydotoold.service
-```
 
 ### 2.3. User group and uinput access
 
