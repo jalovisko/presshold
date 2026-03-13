@@ -10,10 +10,17 @@ pub fn inject(ch: char, session: &Session) -> bool {
     let s: String = ch.into();
 
     if *session == Session::Wayland {
-        if try_wtype(&s) {
-            return true;
+        let is_gnome = std::env::var("XDG_CURRENT_DESKTOP")
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains("gnome");
+
+        if !is_gnome {
+            if try_wtype(&s) {
+                return true;
+            }
+            debug!("wtype failed, trying ydotool");
         }
-        debug!("wtype failed, trying ydotool");
         if try_ydotool(&s) {
             return true;
         }

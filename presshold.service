@@ -6,6 +6,8 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
+# Start ydotoold if available (needed for character injection on GNOME Wayland).
+ExecStartPre=-/bin/sh -c 'command -v ydotoold >/dev/null 2>&1 && ydotoold &'
 ExecStart=%h/.local/bin/presshold
 Restart=on-failure
 RestartSec=3
