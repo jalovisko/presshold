@@ -381,6 +381,22 @@ fn main() -> Result<()> {
     let desktop = detector::desktop();
     info!("Session: {session:?}  Desktop: {desktop}");
 
+    // On GNOME Wayland, spawn ydotoold if it is installed but not yet running.
+    // ydotoold is needed for character injection (wtype doesn't work on GNOME).
+    if matches!(session, Session::Wayland) && desktop.to_lowercase().contains("gnome") {
+        let running = process::Command::new("pgrep")
+            .arg("-x").arg("ydotoold")
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !running {
+            match process::Command::new("ydotoold").spawn() {
+                Ok(_) => info!("Spawned ydotoold for GNOME Wayland injection"),
+                Err(e) => warn!("ydotoold not found — character injection may not work on GNOME Wayland: {e}"),
+            }
+        }
+    }
+
     // Find physical keyboards and build the uinput passthrough device.
     let keyboards = keyboard::find_keyboards();
     if keyboards.is_empty() {
