@@ -385,13 +385,23 @@ fn main() -> Result<()> {
     // ydotoold is needed for character injection (wtype doesn't work on GNOME).
     if matches!(session, Session::Wayland) && desktop.to_lowercase().contains("gnome") {
         let running = process::Command::new("pgrep")
-            .arg("-x").arg("ydotoold")
+            .args(["-x", "ydotoold"])
+            .stdout(process::Stdio::null())
+            .stderr(process::Stdio::null())
             .status()
             .map(|s| s.success())
             .unwrap_or(false);
         if !running {
-            match process::Command::new("ydotoold").spawn() {
-                Ok(_) => info!("Spawned ydotoold for GNOME Wayland injection"),
+            match process::Command::new("ydotoold")
+                .stdout(process::Stdio::null())
+                .stderr(process::Stdio::null())
+                .spawn()
+            {
+                Ok(_) => {
+                    info!("Spawned ydotoold for GNOME Wayland injection");
+                    // Give ydotoold a moment to create its socket.
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
                 Err(e) => warn!("ydotoold not found — character injection may not work on GNOME Wayland: {e}"),
             }
         }
