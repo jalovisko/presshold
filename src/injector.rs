@@ -54,10 +54,19 @@ fn try_ydotool(s: &str) -> bool {
     // ydotool uses uinput, works on GNOME Wayland and other compositors that
     // don't support zwp_virtual_keyboard_v1 (required by wtype).
     // Requires the ydotoold daemon to be running.
-    match Command::new("ydotool").args(["type", "--", s]).status() {
-        Ok(st) if st.success() => true,
-        Ok(st) => {
-            debug!("ydotool exited with {st}");
+    match Command::new("ydotool").args(["type", "--", s]).output() {
+        Ok(out) if out.status.success() => {
+            // ydotool exits 0 even when ydotoold isn't running, printing
+            // "ydotoold backend unavailable" to stderr. Treat that as failure.
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            if stderr.contains("unavailable") {
+                debug!("ydotool: ydotoold not running");
+                return false;
+            }
+            true
+        }
+        Ok(out) => {
+            debug!("ydotool exited with {}", out.status);
             false
         }
         Err(e) => {
