@@ -16,6 +16,9 @@ glib     = "0.21"
 log      = "0.4"
 env_logger = "0.11"
 anyhow   = "1"
+zbus          = { version = "5", default-features = false, features = ["tokio"] }
+tokio         = { version = "1", features = ["rt", "time"] }
+futures-util  = { version = "0.3", default-features = false, features = ["std"] }
 
 # Proper Wayland layer-shell popup positioning (requires libgtk4-layer-shell).
 # Disable with: cargo build --no-default-features

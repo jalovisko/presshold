@@ -1,5 +1,6 @@
 mod accents;
 mod detector;
+mod focus;
 mod injector;
 mod keyboard;
 mod popup;
@@ -17,6 +18,7 @@ use popup::Popup;
 use std::cell::RefCell;
 use std::process;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -43,16 +45,17 @@ enum State {
 // ─────────────────────────────────────────────────────────────────────────────
 
 struct Daemon {
-    state:   State,
-    vdev:    Rc<RefCell<VirtualDevice>>,
-    popup:   Option<Popup>,
-    session: Session,
-    shift:   bool,
-    caps:    bool,
+    state:        State,
+    vdev:         Rc<RefCell<VirtualDevice>>,
+    popup:        Option<Popup>,
+    session:      Session,
+    shift:        bool,
+    caps:         bool,
+    text_focused: Arc<AtomicBool>,
 }
 
 impl Daemon {
-    fn new(vdev: VirtualDevice, session: Session) -> Self {
+    fn new(vdev: VirtualDevice, session: Session, text_focused: Arc<AtomicBool>) -> Self {
         Self {
             state: State::Idle,
             vdev: Rc::new(RefCell::new(vdev)),
@@ -60,6 +63,7 @@ impl Daemon {
             session,
             shift: false,
             caps: false,
+            text_focused,
         }
     }
 
@@ -115,7 +119,9 @@ impl Daemon {
         if event.event_type() == EventType::KEY && event.value() == 1 {
             let key = Key::new(event.code());
             if let Some(ch) = keyboard::key_to_char(key, self.shift, self.caps) {
-                if accents::has_variants(ch) {
+                if accents::has_variants(ch)
+                    && self.text_focused.load(Ordering::Relaxed)
+                {
                     debug!("Pending: {ch:?}");
                     self.state = State::Pending { key, base_char: ch };
                     return; // do NOT pass through yet
@@ -503,6 +509,10 @@ fn main() -> Result<()> {
 
     keyboard::spawn_readers(keyboards, tx);
 
+    // Start the AT-SPI focus tracker.  Falls back to `true` (allow everywhere)
+    // if AT-SPI is not available on this desktop session.
+    let text_focused = focus::spawn();
+
     // ── GTK application ───────────────────────────────────────────────────────
     let app = Application::builder()
         .application_id("dev.presshold")
@@ -517,7 +527,11 @@ fn main() -> Result<()> {
         // Take ownership; ignore subsequent activations.
         let Some(vdev) = vdev_cell.borrow_mut().take() else { return };
 
-        let daemon = Rc::new(RefCell::new(Daemon::new(vdev, session_clone.clone())));
+        let daemon = Rc::new(RefCell::new(Daemon::new(
+            vdev,
+            session_clone.clone(),
+            Arc::clone(&text_focused),
+        )));
 
         // Poll the mpsc receiver every 1 ms from the GTK main loop.
         // 1 ms adds imperceptible latency while keeping CPU usage negligible.

@@ -27,6 +27,7 @@ mkdir -p "$ENV_DIR"
   [[ -n "${WAYLAND_DISPLAY:-}"  ]] && echo "WAYLAND_DISPLAY=$WAYLAND_DISPLAY"
   [[ -n "${XDG_RUNTIME_DIR:-}"  ]] && echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
   [[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]] && echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS"
+  echo "RUST_LOG=${RUST_LOG:-info}"
 } > "$ENV_DIR/env"
 echo "    Environment: $ENV_DIR/env"
 
@@ -36,7 +37,8 @@ cp presshold.service "$SERVICE_DIR/presshold.service"
 echo "    Service unit: $SERVICE_DIR/presshold.service"
 
 systemctl --user daemon-reload
-systemctl --user enable --now presshold.service
+systemctl --user enable presshold.service
+systemctl --user restart presshold.service
 
 echo ""
 echo "==> presshold installed and started."

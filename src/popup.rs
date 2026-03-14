@@ -271,19 +271,16 @@ fn layer_shell_position(
     // Do NOT grab keyboard. The physical keyboard is already grabbed via evdev.
     window.set_keyboard_mode(gtk4_layer_shell::KeyboardMode::None);
 
-    // Anchor the top-left corner to position (x, y) from the screen origin.
+    // Anchor the top-left corner to position (x, y) from the monitor origin.
     window.set_anchor(Edge::Left,   true);
     window.set_anchor(Edge::Top,    true);
     window.set_anchor(Edge::Right,  false);
     window.set_anchor(Edge::Bottom, false);
 
-    // Estimate popup size to position it.
-    // Each character box ≈ 62 px wide plus 16 px total padding; height ≈ 80 px.
-    let est_w = n_accents as i32 * 62 + 16;
-    let est_h = 80;
-    let x = (cursor_x - est_w / 2).max(0);
-    // Show below cursor; flip above if it would go off the bottom of the monitor.
-    let monitor_bottom = gtk4::gdk::Display::default()
+    // Find the monitor the cursor is on and pin the surface to it.
+    // layer-shell margins are relative to the output, not global screen coords,
+    // so we must subtract the monitor's top-left origin.
+    let monitor = gtk4::gdk::Display::default()
         .and_then(|d| {
             d.monitors()
                 .into_iter()
@@ -293,18 +290,31 @@ fn layer_shell_position(
                     cursor_x >= g.x() && cursor_x < g.x() + g.width()
                         && cursor_y >= g.y() && cursor_y < g.y() + g.height()
                 })
-                .map(|m| { let g = m.geometry(); g.y() + g.height() })
-        })
-        .unwrap_or(1080);
-    let y = if cursor_y + 20 + est_h <= monitor_bottom {
-        cursor_y + 20
+        });
+
+    let (mon_x, mon_y, mon_h) = monitor.as_ref()
+        .map(|m| { let g = m.geometry(); (g.x(), g.y(), g.height()) })
+        .unwrap_or((0, 0, 1080));
+
+    window.set_monitor(monitor.as_ref());
+
+    // Estimate popup size to position it.
+    // Each character box ≈ 62 px wide plus 16 px total padding; height ≈ 80 px.
+    let est_w = n_accents as i32 * 62 + 16;
+    let est_h = 80;
+
+    // Coordinates relative to the monitor's top-left corner.
+    let rel_x = (cursor_x - mon_x - est_w / 2).max(0);
+    let rel_y = cursor_y - mon_y;
+    let y = if rel_y + 20 + est_h <= mon_h {
+        rel_y + 20
     } else {
-        cursor_y - est_h - 10
+        rel_y - est_h - 10
     };
 
-    window.set_margin(Edge::Left, x);
+    window.set_margin(Edge::Left, rel_x);
     window.set_margin(Edge::Top,  y);
 
-    debug!("layer-shell popup at ({x},{y})");
+    debug!("layer-shell popup at ({rel_x},{y}) on monitor at ({mon_x},{mon_y})");
     true
 }
