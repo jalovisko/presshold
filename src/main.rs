@@ -225,11 +225,17 @@ impl Daemon {
             return None;
         }
 
-        // Number keys 1-9
+        // Number keys 1-9, both the top row and the keypad.
         let maybe_idx = match key {
-            Key::KEY_1 => Some(0), Key::KEY_2 => Some(1), Key::KEY_3 => Some(2),
-            Key::KEY_4 => Some(3), Key::KEY_5 => Some(4), Key::KEY_6 => Some(5),
-            Key::KEY_7 => Some(6), Key::KEY_8 => Some(7), Key::KEY_9 => Some(8),
+            Key::KEY_1 | Key::KEY_KP1 => Some(0),
+            Key::KEY_2 | Key::KEY_KP2 => Some(1),
+            Key::KEY_3 | Key::KEY_KP3 => Some(2),
+            Key::KEY_4 | Key::KEY_KP4 => Some(3),
+            Key::KEY_5 | Key::KEY_KP5 => Some(4),
+            Key::KEY_6 | Key::KEY_KP6 => Some(5),
+            Key::KEY_7 | Key::KEY_KP7 => Some(6),
+            Key::KEY_8 | Key::KEY_KP8 => Some(7),
+            Key::KEY_9 | Key::KEY_KP9 => Some(8),
             _ => None,
         };
         if let Some(idx) = maybe_idx {
