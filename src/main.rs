@@ -303,12 +303,13 @@ impl Daemon {
 
     /// Inject the chosen character and tear down the popup immediately.
     fn confirm(&mut self, ch: char) {
+        debug!("confirm: {ch:?}");
         if let Some(p) = self.popup.take() {
             p.close();
         }
         self.state = State::Idle;
         let session = self.session.clone();
-        glib::timeout_add_local(Duration::from_millis(80), move || {
+        glib::timeout_add_local(Duration::from_millis(300), move || {
             injector::inject(ch, &session);
             ControlFlow::Break
         });
@@ -317,6 +318,7 @@ impl Daemon {
     /// Like `confirm`, but keeps the popup visible for 100 ms so the user can
     /// see the selection move before it disappears.
     fn confirm_flash(&mut self, ch: char) {
+        debug!("confirm_flash: {ch:?}");
         self.state = State::Idle;
         if let Some(popup) = self.popup.take() {
             let session = self.session.clone();
@@ -325,9 +327,11 @@ impl Daemon {
                 if let Some(p) = popup_slot.take() {
                     p.close();
                 }
-                // Give the compositor ~80 ms to return focus before injecting.
+                // Give the compositor time to return keyboard focus to the
+                // previously focused window before injecting. 80ms was not
+                // reliably enough in practice (observed dropped injections).
                 let session = session.clone();
-                glib::timeout_add_local(Duration::from_millis(80), move || {
+                glib::timeout_add_local(Duration::from_millis(300), move || {
                     injector::inject(ch, &session);
                     ControlFlow::Break
                 });
