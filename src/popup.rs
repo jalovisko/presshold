@@ -281,30 +281,56 @@ fn layer_shell_position(
     // Each character box ≈ 62 px wide plus 16 px total padding; height ≈ 80 px.
     let est_w = n_accents as i32 * 62 + 16;
     let est_h = 80;
-    let x = (cursor_x - est_w / 2).max(0);
-    // Show below cursor; flip above if it would go off the bottom of the monitor.
-    let monitor_bottom = gtk4::gdk::Display::default()
-        .and_then(|d| {
-            d.monitors()
-                .into_iter()
-                .filter_map(|o| o.ok().and_then(|o| o.downcast::<gtk4::gdk::Monitor>().ok()))
-                .find(|m| {
-                    let g = m.geometry();
-                    cursor_x >= g.x() && cursor_x < g.x() + g.width()
-                        && cursor_y >= g.y() && cursor_y < g.y() + g.height()
-                })
-                .map(|m| { let g = m.geometry(); g.y() + g.height() })
+
+    // `cursor_x` / `cursor_y` are global compositor coordinates, but layer-shell
+    // margins are relative to the monitor the surface lives on. Find the monitor
+    // under the cursor and convert, otherwise the popup is placed off-screen on
+    // any output that is not positioned at (0, 0).
+    let monitor = gtk4::gdk::Display::default().and_then(|d| {
+        d.monitors()
+            .into_iter()
+            .filter_map(|o| o.ok().and_then(|o| o.downcast::<gtk4::gdk::Monitor>().ok()))
+            .find(|m| {
+                let g = m.geometry();
+                cursor_x >= g.x()
+                    && cursor_x < g.x() + g.width()
+                    && cursor_y >= g.y()
+                    && cursor_y < g.y() + g.height()
+            })
+    });
+
+    let (mon_x, mon_y, mon_w, mon_h) = monitor
+        .as_ref()
+        .map(|m| {
+            let g = m.geometry();
+            (g.x(), g.y(), g.width(), g.height())
         })
-        .unwrap_or(1080);
-    let y = if cursor_y + 20 + est_h <= monitor_bottom {
-        cursor_y + 20
+        .unwrap_or((0, 0, 1920, 1080));
+
+    // Pin the surface to the monitor holding the cursor; otherwise the
+    // compositor is free to map it onto a different output.
+    if let Some(m) = &monitor {
+        window.set_monitor(Some(m));
+    }
+
+    let rel_x = cursor_x - mon_x;
+    let rel_y = cursor_y - mon_y;
+
+    let x = (rel_x - est_w / 2).clamp(0, (mon_w - est_w).max(0));
+    // Show below cursor; flip above if it would go off the bottom of the monitor.
+    let y = if rel_y + 20 + est_h <= mon_h {
+        rel_y + 20
     } else {
-        cursor_y - est_h - 10
+        (rel_y - est_h - 10).max(0)
     };
 
     window.set_margin(Edge::Left, x);
     window.set_margin(Edge::Top,  y);
 
-    debug!("layer-shell popup at ({x},{y})");
+    // Opposite edges are not anchored, so the surface has no implicit size.
+    // Without an explicit one the compositor never maps it.
+    window.set_default_size(est_w, est_h);
+
+    debug!("layer-shell popup at monitor-relative ({x},{y}) on monitor at ({mon_x},{mon_y}), size {est_w}x{est_h}");
     true
 }
