@@ -9,30 +9,59 @@ use log::debug;
 // Styling
 // ─────────────────────────────────────────────────────────────────────────────
 
-const CSS: &str = "
-.accent-popup {
-    background-color: rgba(38, 38, 38, 0.97);
-    border-radius: 12px;
-    border: 1px solid rgba(255,255,255,0.14);
+/// Popup sizing/typography scale relative to a 1920px-wide reference display.
+/// Keeps the popup's *physical* footprint consistent across small laptop
+/// panels, ultrawides, and 4K monitors, instead of a fixed pixel size that
+/// looks oversized on lower-resolution screens.
+fn popup_scale(mon_w: i32) -> f64 {
+    (mon_w as f64 / 1920.0).clamp(0.72, 1.15)
 }
-.accent-item {
-    padding: 5px 7px;
-    border-radius: 8px;
-    min-width: 44px;
-}
-.accent-item.selected {
-    background-color: rgba(30, 108, 229, 0.90);
-}
-.accent-char {
+
+fn build_css(scale: f64) -> String {
+    let px = |base: f64| (base * scale).round() as i32;
+    format!(
+        "
+.accent-popup {{
+    background: linear-gradient(160deg, rgba(46,46,50,0.97), rgba(24,24,27,0.97));
+    border-radius: {popup_radius}px;
+    border: 1px solid rgba(255,255,255,0.12);
+    box-shadow: 0 {shadow_y}px {shadow_blur}px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.06);
+}}
+.accent-item {{
+    padding: {pad_v}px {pad_h}px;
+    border-radius: {item_radius}px;
+    min-width: {item_w}px;
+    transition: background 120ms ease, box-shadow 120ms ease;
+}}
+.accent-item.selected {{
+    background: linear-gradient(160deg, rgba(70,138,255,0.95), rgba(28,96,224,0.95));
+    box-shadow: 0 {sel_shadow_y}px {sel_shadow_blur}px rgba(30,108,229,0.45), inset 0 1px 0 rgba(255,255,255,0.25);
+}}
+.accent-char {{
     color: white;
-    font-size: 22px;
-    font-weight: bold;
+    font-size: {char_size}px;
+    font-weight: 600;
+    font-family: \"Inter\", \"Cantarell\", sans-serif;
+}}
+.accent-num {{
+    color: rgba(220,220,220,0.55);
+    font-size: {num_size}px;
+    font-weight: 500;
+}}
+",
+        popup_radius = px(14.0),
+        shadow_y = px(10.0),
+        shadow_blur = px(28.0),
+        pad_v = px(6.0),
+        pad_h = px(9.0),
+        item_radius = px(10.0),
+        item_w = px(46.0),
+        sel_shadow_y = px(3.0),
+        sel_shadow_blur = px(10.0),
+        char_size = px(23.0),
+        num_size = px(10.0).max(8),
+    )
 }
-.accent-num {
-    color: rgba(210,210,210,0.70);
-    font-size: 10px;
-}
-";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Popup
@@ -51,9 +80,15 @@ impl Popup {
     /// still delivers characters to the previously focused window.
     /// `base_char` is shown as item #1 (index 0); `accents` follow as #2, #3 …
     pub fn new(base_char: char, accents: &[char], cursor_x: i32, cursor_y: i32) -> Self {
+        // ── Scale ────────────────────────────────────────────────────────────
+        // Look up the monitor under the cursor *before* building the CSS so
+        // typography/padding/margins can adapt to that monitor's resolution.
+        let (_, _, mon_w, _) = monitor_geometry(cursor_x, cursor_y);
+        let scale = popup_scale(mon_w);
+
         // ── CSS ──────────────────────────────────────────────────────────────
         let provider = CssProvider::new();
-        provider.load_from_data(CSS);
+        provider.load_from_data(&build_css(scale));
         if let Some(display) = gtk4::gdk::Display::default() {
             gtk4::style_context_add_provider_for_display(
                 &display,
@@ -72,13 +107,15 @@ impl Popup {
             .build();
 
         // ── Character row ─────────────────────────────────────────────────────
+        let margin = ((8.0 * scale).round() as i32).max(4);
+        let spacing = ((4.0 * scale).round() as i32).max(2);
         let row = GBox::builder()
             .orientation(Orientation::Horizontal)
-            .spacing(4)
-            .margin_top(8)
-            .margin_bottom(8)
-            .margin_start(8)
-            .margin_end(8)
+            .spacing(spacing)
+            .margin_top(margin)
+            .margin_bottom(margin)
+            .margin_start(margin)
+            .margin_end(margin)
             .build();
 
         // base_char is item #1; accent variants follow as #2, #3, …
@@ -120,7 +157,8 @@ impl Popup {
 
         // ── Position ──────────────────────────────────────────────────────────
         #[cfg(feature = "layer-shell")]
-        let used_layer_shell = layer_shell_position(&window, 1 + accents.len(), cursor_x, cursor_y);
+        let used_layer_shell =
+            layer_shell_position(&window, 1 + accents.len(), cursor_x, cursor_y, scale);
         #[cfg(not(feature = "layer-shell"))]
         let used_layer_shell = false;
 
@@ -163,6 +201,30 @@ impl Popup {
 // Positioning
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Geometry `(x, y, width, height)` of the monitor under the cursor, or a
+/// 1920×1080 fallback if no display/monitor can be resolved.
+fn monitor_geometry(cursor_x: i32, cursor_y: i32) -> (i32, i32, i32, i32) {
+    gtk4::gdk::Display::default()
+        .and_then(|display| {
+            display
+                .monitors()
+                .into_iter()
+                .filter_map(|obj| obj.ok().and_then(|o| o.downcast::<gtk4::gdk::Monitor>().ok()))
+                .find(|mon| {
+                    let g = mon.geometry();
+                    cursor_x >= g.x()
+                        && cursor_x < g.x() + g.width()
+                        && cursor_y >= g.y()
+                        && cursor_y < g.y() + g.height()
+                })
+        })
+        .map(|mon| {
+            let g = mon.geometry();
+            (g.x(), g.y(), g.width(), g.height())
+        })
+        .unwrap_or((0, 0, 1920, 1080))
+}
+
 fn position_window(window: &Window, cursor_x: i32, cursor_y: i32) {
     // Popup appears just below the cursor, horizontally centred on it.
     // We don't know the window size before realization; use defaults for
@@ -170,28 +232,7 @@ fn position_window(window: &Window, cursor_x: i32, cursor_y: i32) {
     let w = window.allocated_width().max(80);
     let h = window.allocated_height().max(70);
 
-    let display = match gtk4::gdk::Display::default() {
-        Some(d) => d,
-        None => return,
-    };
-
-    // Find which monitor the cursor is on.
-    let (mx, my, mw, mh) = display
-        .monitors()
-        .into_iter()
-        .filter_map(|obj| obj.ok().and_then(|o| o.downcast::<gtk4::gdk::Monitor>().ok()))
-        .find(|mon| {
-            let g = mon.geometry();
-            cursor_x >= g.x()
-                && cursor_x < g.x() + g.width()
-                && cursor_y >= g.y()
-                && cursor_y < g.y() + g.height()
-        })
-        .map(|mon| {
-            let g = mon.geometry();
-            (g.x(), g.y(), g.width(), g.height())
-        })
-        .unwrap_or((0, 0, 1920, 1080));
+    let (mx, my, mw, mh) = monitor_geometry(cursor_x, cursor_y);
 
     let x = (cursor_x - w / 2).clamp(mx, mx + mw - w);
     // Show below cursor; flip above if it would go off-screen.
@@ -258,6 +299,7 @@ fn layer_shell_position(
     n_accents: usize,
     cursor_x: i32,
     cursor_y: i32,
+    scale: f64,
 ) -> bool {
     use gtk4_layer_shell::{Edge, Layer, LayerShell};
 
@@ -277,10 +319,11 @@ fn layer_shell_position(
     window.set_anchor(Edge::Right,  false);
     window.set_anchor(Edge::Bottom, false);
 
-    // Estimate popup size to position it.
-    // Each character box ≈ 62 px wide plus 16 px total padding; height ≈ 80 px.
-    let est_w = n_accents as i32 * 62 + 16;
-    let est_h = 80;
+    // Estimate popup size to position it, scaled to match `build_css`.
+    // Each character box ≈ 62 px wide plus 16 px total padding; height ≈ 80 px
+    // at the 1920px-wide reference resolution.
+    let est_w = n_accents as i32 * (62.0 * scale).round() as i32 + (16.0 * scale).round() as i32;
+    let est_h = (80.0 * scale).round() as i32;
 
     // `cursor_x` / `cursor_y` are global compositor coordinates, but layer-shell
     // margins are relative to the monitor the surface lives on. Find the monitor
