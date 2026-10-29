@@ -16,6 +16,7 @@ glib     = "0.21"
 log      = "0.4"
 env_logger = "0.11"
 anyhow   = "1"
+libc     = "0.2"
 
 # Proper Wayland layer-shell popup positioning (requires libgtk4-layer-shell).
 # Disable with: cargo build --no-default-features

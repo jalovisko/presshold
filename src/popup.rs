@@ -281,25 +281,37 @@ fn layer_shell_position(
     // Each character box ≈ 62 px wide plus 16 px total padding; height ≈ 80 px.
     let est_w = n_accents as i32 * 62 + 16;
     let est_h = 80;
-    let x = (cursor_x - est_w / 2).max(0);
+    // Layer-shell margins are relative to the output the surface lands on,
+    // while the cursor position is in global (layout) coordinates. Find the
+    // monitor under the cursor, pin the surface to it and convert the cursor
+    // position to monitor-local coordinates. Without this the popup is placed
+    // off-screen whenever the monitor does not sit at the layout origin.
+    let monitor = gtk4::gdk::Display::default().and_then(|d| {
+        d.monitors()
+            .into_iter()
+            .filter_map(|o| o.ok().and_then(|o| o.downcast::<gtk4::gdk::Monitor>().ok()))
+            .find(|m| {
+                let g = m.geometry();
+                cursor_x >= g.x() && cursor_x < g.x() + g.width()
+                    && cursor_y >= g.y() && cursor_y < g.y() + g.height()
+            })
+    });
+    let (mon_x, mon_y, mon_h) = match &monitor {
+        Some(m) => {
+            window.set_monitor(Some(m));
+            let g = m.geometry();
+            (g.x(), g.y(), g.height())
+        }
+        None => (0, 0, 1080),
+    };
+    let local_x = cursor_x - mon_x;
+    let local_y = cursor_y - mon_y;
+    let x = (local_x - est_w / 2).max(0);
     // Show below cursor; flip above if it would go off the bottom of the monitor.
-    let monitor_bottom = gtk4::gdk::Display::default()
-        .and_then(|d| {
-            d.monitors()
-                .into_iter()
-                .filter_map(|o| o.ok().and_then(|o| o.downcast::<gtk4::gdk::Monitor>().ok()))
-                .find(|m| {
-                    let g = m.geometry();
-                    cursor_x >= g.x() && cursor_x < g.x() + g.width()
-                        && cursor_y >= g.y() && cursor_y < g.y() + g.height()
-                })
-                .map(|m| { let g = m.geometry(); g.y() + g.height() })
-        })
-        .unwrap_or(1080);
-    let y = if cursor_y + 20 + est_h <= monitor_bottom {
-        cursor_y + 20
+    let y = if local_y + 20 + est_h <= mon_h {
+        local_y + 20
     } else {
-        cursor_y - est_h - 10
+        local_y - est_h - 10
     };
 
     window.set_margin(Edge::Left, x);
