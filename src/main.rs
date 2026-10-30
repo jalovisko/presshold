@@ -106,6 +106,9 @@ impl Daemon {
         }
 
         let is_key = event.event_type() == EventType::KEY;
+        if is_key {
+            debug!("IN  {:?} value={}", Key::new(event.code()), event.value());
+        }
         let t0 = is_key.then(Instant::now);
         // Track modifier state so we know the effective character of a keypress.
         if is_key {
@@ -247,8 +250,12 @@ impl Daemon {
             return None;
         }
 
-        // Only react on key-down from here on.
+        // Only react on key-down from here on.  Releases of other keys, usually
+        // a modifier the user lets go of while choosing, must still reach the
+        // compositor: otherwise it keeps seeing Shift held and types the
+        // accent shifted (` becomes ~, so È comes out as Ẽ).
         if value != 1 {
+            self.passthrough(event);
             self.state = State::PopupActive { trigger_key, base_char, accents, selected };
             return None;
         }
@@ -259,7 +266,9 @@ impl Daemon {
         let total = 1 + accents.len();
         let item = |idx: usize| if idx == 0 { base_char } else { accents[idx - 1] };
 
-        match popup_keys::popup_action(key, same_letter) {
+        let action = popup_keys::popup_action(key, same_letter);
+        debug!("POPUP {key:?} same_letter={same_letter} -> {action:?} (selected={selected})");
+        match action {
             PopupAction::MoveLeft => {
                 selected = selected.saturating_sub(1);
                 self.update_selection(selected);
@@ -295,6 +304,9 @@ impl Daemon {
 
     /// Pass an event through to the virtual keyboard as-is.
     fn passthrough(&mut self, event: InputEvent) {
+        if event.event_type() == EventType::KEY {
+            debug!("OUT passthrough {:?} value={}", Key::new(event.code()), event.value());
+        }
         if let Err(e) = self.out.emit(&[event]) {
             warn!("Passthrough error: {e}");
         }
@@ -302,6 +314,7 @@ impl Daemon {
 
     /// Synthesise a key press or release and emit it (followed by SYN).
     fn emit_key(&mut self, key: Key, value: i32) {
+        debug!("OUT {key:?} value={value}");
         let _ = self.out.emit(&[
             InputEvent::new_now(EventType::KEY, key.code(), value),
             InputEvent::new_now(EventType::SYNCHRONIZATION, 0, 0),
@@ -743,6 +756,26 @@ mod tests {
             (Key::KEY_LEFTSHIFT, 1), (Key::KEY_E, 1), (Key::KEY_E, 0), (Key::KEY_LEFTSHIFT, 0),
             (Key::KEY_LEFTSHIFT, 1),                      // restored
             (Key::KEY_DOT, 1),
+        ]);
+    }
+
+    #[test]
+    fn shift_released_while_the_popup_is_open_reaches_the_compositor() {
+        let (mut d, out) = daemon();
+        d.handle_event(key(Key::KEY_LEFTSHIFT, 1)); // Shift+E held → popup for 'E'
+        popup_open(&mut d, 'E', Key::KEY_E, 0);
+        d.handle_event(key(Key::KEY_LEFTSHIFT, 0)); // user lets go of Shift while choosing
+        d.handle_event(key(Key::KEY_E, 1));         // È
+        d.handle_event(key(Key::KEY_E, 0));
+        d.handle_event(key(Key::KEY_SPACE, 1));
+        settle(&mut d);
+        assert_eq!(typed(&out), vec![
+            (Key::KEY_LEFTSHIFT, 1),
+            (Key::KEY_LEFTSHIFT, 0), // must be forwarded, or ` is typed as ~ and È becomes Ẽ
+            (Key::KEY_CAPSLOCK, 1), (Key::KEY_CAPSLOCK, 0),
+            (Key::KEY_GRAVE, 1), (Key::KEY_GRAVE, 0),
+            (Key::KEY_LEFTSHIFT, 1), (Key::KEY_E, 1), (Key::KEY_E, 0), (Key::KEY_LEFTSHIFT, 0),
+            (Key::KEY_SPACE, 1),
         ]);
     }
 
