@@ -71,7 +71,8 @@ struct Daemon {
     shift:       bool,
     /// Which Shift key the user is holding, so it can be lifted and restored.
     shift_key:   Key,
-    caps:        bool,
+    /// Where the real Caps Lock state is read from (the compositor's LED).
+    caps:        Box<dyn keyboard::CapsState>,
     pending:     Option<PendingInject>,
     /// Events that arrived while a character was waiting to be typed; they
     /// are replayed, in order, right after it.
@@ -79,7 +80,7 @@ struct Daemon {
 }
 
 impl Daemon {
-    fn new(out: Box<dyn keyboard::KeyOut>, session: Session, compose_key: Option<Key>, order: accents::AccentOrder) -> Self {
+    fn new(out: Box<dyn keyboard::KeyOut>, caps: Box<dyn keyboard::CapsState>, session: Session, compose_key: Option<Key>, order: accents::AccentOrder) -> Self {
         Self {
             state: State::Idle,
             out,
@@ -89,7 +90,7 @@ impl Daemon {
             order,
             shift: false,
             shift_key: Key::KEY_LEFTSHIFT,
-            caps: false,
+            caps,
             pending: None,
             deferred: VecDeque::new(),
         }
@@ -118,9 +119,6 @@ impl Daemon {
                     if self.shift {
                         self.shift_key = k;
                     }
-                }
-                Key::KEY_CAPSLOCK if event.value() == 1 => {
-                    self.caps = !self.caps;
                 }
                 _ => {}
             }
@@ -159,7 +157,8 @@ impl Daemon {
         // Key-down for a letter that has accent variants?  Enter Pending.
         if event.event_type() == EventType::KEY && event.value() == 1 {
             let key = Key::new(event.code());
-            if let Some(ch) = keyboard::key_to_char(key, self.shift, self.caps) {
+            let caps = self.caps.is_on();
+            if let Some(ch) = keyboard::key_to_char(key, self.shift, caps) {
                 if accents::has_variants(ch) {
                     debug!("Pending: {ch:?}");
                     self.state = State::Pending { key, base_char: ch };
@@ -260,7 +259,7 @@ impl Daemon {
             return None;
         }
 
-        let same_letter = keyboard::key_to_char(key, self.shift, self.caps)
+        let same_letter = keyboard::key_to_char(key, self.shift, self.caps.is_on())
             .map(|c| c.to_ascii_lowercase() == base_char.to_ascii_lowercase())
             .unwrap_or(false);
         let total = 1 + accents.len();
@@ -588,6 +587,9 @@ fn main() -> Result<()> {
 
     let vdev = keyboard::create_passthrough()
         .context("Failed to create uinput passthrough device")?;
+    // Caps Lock is read from the LED the compositor sets on the passthrough,
+    // never inferred from CapsLock presses: that key may be Compose, Escape…
+    let caps = keyboard::LedCapsLock::open(&vdev);
 
     let compose_key = compose::detect_compose_key();
     match compose_key {
@@ -610,16 +612,17 @@ fn main() -> Result<()> {
         .application_id("dev.presshold")
         .build();
 
-    // We move the VirtualDevice into the activate callback.
+    // We move the passthrough device into the activate callback.
     // Consumed once; subsequent activate calls (if any) are ignored.
     let vdev_cell     = RefCell::new(Some(vdev));
+    let caps_cell     = RefCell::new(Some(caps));
     let session_clone = session.clone();
 
     app.connect_activate(move |app| {
         // Take ownership; ignore subsequent activations.
         let Some(vdev) = vdev_cell.borrow_mut().take() else { return };
 
-        let daemon = Rc::new(RefCell::new(Daemon::new(Box::new(vdev), session_clone.clone(), compose_key, order)));
+        let daemon = Rc::new(RefCell::new(Daemon::new(Box::new(vdev), Box::new(caps_cell.borrow_mut().take().expect("taken once, together with vdev")), session_clone.clone(), compose_key, order)));
 
         // Poll the mpsc receiver every 1 ms from the GTK main loop.
         // 1 ms adds imperceptible latency while keeping CPU usage negligible.
@@ -666,8 +669,37 @@ mod tests {
     /// Most tests use the grave-first order so that index 1 is `è`.
     fn daemon_with(order: accents::AccentOrder) -> (Daemon, Rc<RefCell<Vec<InputEvent>>>) {
         let out = Rc::new(RefCell::new(Vec::new()));
-        let d = Daemon::new(Box::new(Recorder(out.clone())), Session::Wayland, Some(Key::KEY_CAPSLOCK), order);
+        let d = Daemon::new(Box::new(Recorder(out.clone())), Box::new(FixedCaps(false)), Session::Wayland, Some(Key::KEY_CAPSLOCK), order);
         (d, out)
+    }
+
+    /// A Caps Lock state that is whatever the test says it is.
+    struct FixedCaps(bool);
+    impl keyboard::CapsState for FixedCaps {
+        fn is_on(&mut self) -> bool { self.0 }
+    }
+
+    #[test]
+    fn capslock_presses_do_not_change_the_letter_case() {
+        // On this setup CapsLock is the Compose key: pressing it must not
+        // make the daemon believe Caps Lock is on.
+        let (mut d, _out) = daemon();
+        d.handle_event(key(Key::KEY_CAPSLOCK, 1));
+        d.handle_event(key(Key::KEY_CAPSLOCK, 0));
+        d.handle_event(key(Key::KEY_E, 1));
+        assert!(matches!(d.state, State::Pending { base_char: 'e', .. }), "{:?}", d.state);
+    }
+
+    #[test]
+    fn caps_lock_state_comes_from_the_compositor() {
+        let out = Rc::new(RefCell::new(Vec::new()));
+        let mut d = Daemon::new(Box::new(Recorder(out)), Box::new(FixedCaps(true)), Session::Wayland, Some(Key::KEY_CAPSLOCK), accents::AccentOrder::GraveFirst);
+        d.handle_event(key(Key::KEY_E, 1));
+        assert!(matches!(d.state, State::Pending { base_char: 'E', .. }), "{:?}", d.state);
+        d.handle_event(key(Key::KEY_E, 0));
+        d.handle_event(key(Key::KEY_LEFTSHIFT, 1));
+        d.handle_event(key(Key::KEY_A, 1)); // Shift + Caps Lock = lowercase
+        assert!(matches!(d.state, State::Pending { base_char: 'a', .. }), "{:?}", d.state);
     }
 
     fn key(k: Key, value: i32) -> InputEvent {

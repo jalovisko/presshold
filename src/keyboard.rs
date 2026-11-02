@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
-use evdev::{AttributeSet, Device, InputEvent, Key};
-use evdev::uinput::{VirtualDevice, VirtualDeviceBuilder};
+use evdev::{AttributeSet, Device, EventType, InputEvent, Key, LedType};
 use log::{info, warn, debug};
 use std::collections::HashSet;
 use std::ffi::CString;
@@ -60,10 +59,9 @@ pub trait KeyOut {
     fn emit(&mut self, events: &[InputEvent]) -> std::io::Result<()>;
 }
 
-impl KeyOut for VirtualDevice {
-    fn emit(&mut self, events: &[InputEvent]) -> std::io::Result<()> {
-        VirtualDevice::emit(self, events)
-    }
+/// Where the daemon learns whether Caps Lock is on.
+pub trait CapsState {
+    fn is_on(&mut self) -> bool;
 }
 
 // ── Virtual passthrough device ────────────────────────────────────────────────
@@ -81,22 +79,186 @@ pub fn passthrough_keys() -> AttributeSet<Key> {
     keys
 }
 
+const PASSTHROUGH_NAME: &str = "presshold-passthrough";
+
+// uinput ioctls (linux/uinput.h). Written out because the evdev crate's
+// builder cannot declare LEDs, and we need the Caps Lock LED: the compositor
+// lights it on the passthrough, and that is the only reliable way to know
+// whether Caps Lock is really on.
+const fn uinput_ioc(dir: u64, nr: u64, size: u64) -> u64 {
+    (dir << 30) | (size << 16) | ((b'U' as u64) << 8) | nr
+}
+const IOC_WRITE: u64 = 1;
+const IOC_READ: u64 = 2;
+const UI_DEV_CREATE: u64 = uinput_ioc(0, 1, 0);
+const UI_DEV_DESTROY: u64 = uinput_ioc(0, 2, 0);
+const UI_DEV_SETUP: u64 = uinput_ioc(IOC_WRITE, 3, std::mem::size_of::<libc::uinput_setup>() as u64);
+const UI_SET_EVBIT: u64 = uinput_ioc(IOC_WRITE, 100, 4);
+const UI_SET_KEYBIT: u64 = uinput_ioc(IOC_WRITE, 101, 4);
+const UI_SET_LEDBIT: u64 = uinput_ioc(IOC_WRITE, 105, 4);
+const SYSNAME_LEN: usize = 64;
+const UI_GET_SYSNAME: u64 = uinput_ioc(IOC_READ, 44, SYSNAME_LEN as u64);
+const BUS_VIRTUAL: u16 = 0x06;
+
+/// The uinput keyboard every event is replayed on.
+pub struct Passthrough {
+    file: std::fs::File,
+    /// Its `/dev/input/eventN` node, once udev has created it.
+    node: Option<PathBuf>,
+}
+
+fn uinput_set_bit(fd: i32, req: u64, bit: u32) -> Result<()> {
+    // SAFETY: plain integer-argument ioctl on a uinput fd we own.
+    let r = unsafe { libc::ioctl(fd, req as libc::c_ulong, bit as libc::c_int) };
+    if r < 0 {
+        return Err(std::io::Error::last_os_error()).with_context(|| format!("uinput ioctl {req:#x} bit {bit}"));
+    }
+    Ok(())
+}
+
 /// Build the uinput virtual keyboard.  Events we want to pass through are
 /// re-emitted via this device.
-pub fn create_passthrough() -> Result<VirtualDevice> {
-    let vdev = VirtualDeviceBuilder::new()
-        .context("failed to open /dev/uinput")?
-        .name("presshold-passthrough")
-        .with_keys(&passthrough_keys())?
-        .build()
-        .context("failed to build virtual device")?;
+pub fn create_passthrough() -> Result<Passthrough> {
+    use std::os::unix::io::AsRawFd;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/uinput")
+        .context("failed to open /dev/uinput")?;
+    let fd = file.as_raw_fd();
+
+    uinput_set_bit(fd, UI_SET_EVBIT, EventType::KEY.0 as u32)?;
+    for key in passthrough_keys().iter() {
+        uinput_set_bit(fd, UI_SET_KEYBIT, key.code() as u32)?;
+    }
+    uinput_set_bit(fd, UI_SET_EVBIT, EventType::LED.0 as u32)?;
+    for led in [LedType::LED_NUML, LedType::LED_CAPSL, LedType::LED_SCROLLL] {
+        uinput_set_bit(fd, UI_SET_LEDBIT, led.0 as u32)?;
+    }
+
+    // SAFETY: uinput_setup is plain old data; zeroed is a valid value.
+    let mut setup: libc::uinput_setup = unsafe { std::mem::zeroed() };
+    setup.id.bustype = BUS_VIRTUAL;
+    setup.id.vendor = 0x1209; // pid.codes, generic open-source vendor id
+    setup.id.product = 0x7055;
+    setup.id.version = 1;
+    for (dst, src) in setup.name.iter_mut().zip(PASSTHROUGH_NAME.bytes()) {
+        *dst = src as libc::c_char;
+    }
+    // SAFETY: ioctls with a pointer to a properly sized, initialised struct.
+    let r = unsafe { libc::ioctl(fd, UI_DEV_SETUP as libc::c_ulong, &setup as *const libc::uinput_setup) };
+    if r < 0 {
+        return Err(std::io::Error::last_os_error()).context("UI_DEV_SETUP");
+    }
+    // SAFETY: no-argument ioctl.
+    let r = unsafe { libc::ioctl(fd, UI_DEV_CREATE as libc::c_ulong) };
+    if r < 0 {
+        return Err(std::io::Error::last_os_error()).context("UI_DEV_CREATE");
+    }
 
     // Give the kernel/udev a moment to register the new device so that
     // applications see it before we start emitting events.
     thread::sleep(Duration::from_millis(100));
 
-    info!("Created passthrough virtual device");
-    Ok(vdev)
+    let node = passthrough_node(fd);
+    info!("Created passthrough virtual device{}", node.as_ref().map_or(String::new(), |n| format!(" ({})", n.display())));
+    Ok(Passthrough { file, node })
+}
+
+/// `/dev/input/eventN` of the uinput device behind `fd`, via its sysfs name.
+fn passthrough_node(fd: i32) -> Option<PathBuf> {
+    let mut buf = [0u8; SYSNAME_LEN];
+    // SAFETY: the kernel writes at most SYSNAME_LEN bytes into buf.
+    let r = unsafe { libc::ioctl(fd, UI_GET_SYSNAME as libc::c_ulong, buf.as_mut_ptr()) };
+    if r < 0 {
+        warn!("UI_GET_SYSNAME failed: {}", std::io::Error::last_os_error());
+        return None;
+    }
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    let sysname = String::from_utf8_lossy(&buf[..end]).into_owned();
+    let entries = std::fs::read_dir(format!("/sys/devices/virtual/input/{sysname}")).ok()?;
+    entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name())
+        .find(|n| n.to_str().map_or(false, |n| n.starts_with("event")))
+        .map(|n| Path::new(INPUT_DIR).join(n))
+}
+
+impl KeyOut for Passthrough {
+    fn emit(&mut self, events: &[InputEvent]) -> std::io::Result<()> {
+        use std::io::Write;
+        let mut raw: Vec<libc::input_event> = Vec::with_capacity(events.len() + 1);
+        let to_raw = |t: u16, code: u16, value: i32| {
+            // SAFETY: input_event is plain old data; the kernel stamps the time.
+            let mut ev: libc::input_event = unsafe { std::mem::zeroed() };
+            ev.type_ = t;
+            ev.code = code;
+            ev.value = value;
+            ev
+        };
+        for ev in events {
+            raw.push(to_raw(ev.event_type().0, ev.code(), ev.value()));
+        }
+        // Like evdev's VirtualDevice::emit: terminate the batch with SYN_REPORT.
+        raw.push(to_raw(EventType::SYNCHRONIZATION.0, 0, 0));
+        // SAFETY: reinterpreting a Vec of POD structs as bytes for write(2).
+        let bytes = unsafe {
+            std::slice::from_raw_parts(raw.as_ptr() as *const u8, raw.len() * std::mem::size_of::<libc::input_event>())
+        };
+        self.file.write_all(bytes)
+    }
+}
+
+impl Drop for Passthrough {
+    fn drop(&mut self) {
+        use std::os::unix::io::AsRawFd;
+        // SAFETY: no-argument ioctl on our own fd; errors are irrelevant at exit.
+        unsafe { libc::ioctl(self.file.as_raw_fd(), UI_DEV_DESTROY as libc::c_ulong) };
+    }
+}
+
+// ── Caps Lock ────────────────────────────────────────────────────────────────
+
+/// Caps Lock as the compositor reports it: it keeps the LEDs of every
+/// keyboard, the passthrough included, in sync with the XKB lock state.
+/// Counting CapsLock presses instead goes wrong as soon as that key is
+/// something else (Compose, Escape, Ctrl…) or was toggled before we started.
+pub struct LedCapsLock {
+    dev: Option<Device>,
+}
+
+impl LedCapsLock {
+    pub fn open(passthrough: &Passthrough) -> Self {
+        let Some(node) = &passthrough.node else {
+            warn!("Passthrough node unknown: Caps Lock will be assumed off");
+            return Self::unavailable();
+        };
+        // udev may still be applying permissions to the fresh node.
+        for _ in 0..20 {
+            match Device::open(node) {
+                Ok(dev) => {
+                    info!("Caps Lock state read from {}", node.display());
+                    return Self { dev: Some(dev) };
+                }
+                Err(_) => thread::sleep(Duration::from_millis(50)),
+            }
+        }
+        warn!("Could not open {}: Caps Lock will be assumed off", node.display());
+        Self::unavailable()
+    }
+
+    pub fn unavailable() -> Self {
+        Self { dev: None }
+    }
+}
+
+impl CapsState for LedCapsLock {
+    fn is_on(&mut self) -> bool {
+        self.dev
+            .as_ref()
+            .and_then(|d| d.get_led_state().ok())
+            .map_or(false, |leds| leds.contains(LedType::LED_CAPSL))
+    }
 }
 
 // ── Reader threads ────────────────────────────────────────────────────────────
